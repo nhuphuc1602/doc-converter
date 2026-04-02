@@ -1,0 +1,42 @@
+# brev.yaml — NVIDIA Brev Launchable config
+# Deploy: brev open brev.yaml  (hoặc import vào brev.nvidia.com)
+
+name: doc-converter
+description: "GPU-accelerated PDF ↔ Word converter"
+
+instance:
+  # Chọn GPU phù hợp với workload:
+  # - g6.xlarge  (L4  24GB)  : nhẹ, tiết kiệm chi phí
+  # - p3.2xlarge (V100 16GB) : cân bằng
+  # - p4d.xlarge (A100 40GB) : tốt nhất cho batch lớn
+  type: g6.xlarge
+  region: us-east-1
+
+container:
+  image: nvcr.io/nvidia/pytorch:24.05-py3   # NVIDIA base image có sẵn CUDA
+  ports:
+    - 7860   # Gradio UI
+    - 8000   # FastAPI
+
+files:
+  - app.py
+  - converter.py
+  - requirements.txt
+  - setup.sh
+
+setup_commands:
+  - bash setup.sh
+
+run_command: python app.py
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TORCH_HOME: /workspace/.cache/torch
+  TRANSFORMERS_CACHE: /workspace/.cache/huggingface
+
+# Port forwarding để truy cập từ browser
+expose:
+  - port: 7860
+    name: "Gradio UI"
+  - port: 8000
+    name: "REST API"
