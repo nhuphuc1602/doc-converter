@@ -2,8 +2,9 @@
 converter.py — GPU-accelerated PDF ↔ Word converter
 Chạy trên NVIDIA Brev với GPU (H100/A100/RTX).
 
-PDF → Word : dùng marker-pdf (surya OCR + layout detection, GPU)
-Word → PDF : dùng LibreOffice headless (chính xác nhất cho .docx)
+PDF   → Word : dùng marker-pdf (surya OCR + layout detection, GPU)
+Word  → PDF  : dùng LibreOffice headless (chính xác nhất cho .docx)
+Image → Word : dùng surya OCR trực tiếp (GPU-accelerated)
 """
 
 import os
@@ -29,11 +30,12 @@ def get_device_info() -> dict:
 
 def pdf_to_word(pdf_path: str, output_dir: str | None = None) -> str:
     """
-    Convert PDF → .docx using marker-pdf (GPU-accelerated).
+    Convert PDF → .docx using marker-pdf 1.x (GPU-accelerated).
     Returns path to the output .docx file.
     """
-    from marker.convert import convert_single_pdf
-    from marker.models import load_all_models
+    from marker.models import create_model_dict
+    from marker.converters.pdf import PdfConverter
+    from marker.config.parser import ConfigParser
     from docx import Document
 
     pdf_path = Path(pdf_path)
@@ -43,18 +45,23 @@ def pdf_to_word(pdf_path: str, output_dir: str | None = None) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load models (cached after first load)
-    models = load_all_models()
+    models = create_model_dict()
 
-    # Convert PDF → markdown + metadata (GPU-accelerated)
-    full_text, images, metadata = convert_single_pdf(
-        str(pdf_path),
-        models,
-        max_pages=None,
-        langs=["Vietnamese", "English"],
-        batch_multiplier=4,          # tận dụng VRAM lớn của Brev GPU
+    # Config: tận dụng GPU Brev
+    config = ConfigParser({
+        "langs": "vi,en",
+        "batch_multiplier": 4,
+    })
+
+    # Convert PDF → markdown
+    converter = PdfConverter(
+        config=config.generate_config_dict(),
+        artifact_dict=models,
     )
+    rendered = converter(str(pdf_path))
+    full_text = rendered.markdown
 
-    # Build .docx from markdown output
+    # Build .docx từ markdown output
     doc = Document()
     doc.add_heading(pdf_path.stem, level=0)
 
@@ -118,6 +125,74 @@ def word_to_pdf(docx_path: str, output_dir: str | None = None) -> str:
         raise FileNotFoundError(f"LibreOffice không tạo được file: {out_path}")
 
     return str(out_path)
+
+
+# ── Image → Word ─────────────────────────────────────────────────────────────
+
+def image_to_word(img_path: str, output_dir: str | None = None) -> str:
+    """
+    Convert image (JPG/PNG/TIFF/WebP/BMP) → .docx using surya OCR (GPU-accelerated).
+    Returns path to the output .docx file.
+    """
+    from PIL import Image
+    from surya.ocr import run_ocr
+    from surya.model.detection.model import load_model as load_det_model
+    from surya.model.detection.processor import load_processor as load_det_processor
+    from surya.model.recognition.model import load_model as load_rec_model
+    from surya.model.recognition.processor import load_processor as load_rec_processor
+    from docx import Document
+
+    img_path = Path(img_path)
+    if output_dir is None:
+        output_dir = img_path.parent
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mở ảnh
+    image = Image.open(str(img_path)).convert("RGB")
+
+    # Load surya models (GPU nếu có)
+    det_processor = load_det_processor()
+    det_model     = load_det_model()
+    rec_model     = load_rec_model()
+    rec_processor = load_rec_processor()
+
+    # Chạy OCR — GPU-accelerated
+    langs       = [["vi", "en"]]
+    predictions = run_ocr(
+        [image],
+        langs,
+        det_model,
+        det_processor,
+        rec_model,
+        rec_processor,
+    )
+
+    # Build .docx từ kết quả OCR
+    doc = Document()
+    doc.add_heading(img_path.stem, level=0)
+
+    for page in predictions:
+        for line in page.text_lines:
+            text = line.text.strip()
+            if text:
+                doc.add_paragraph(text)
+
+    out_path = output_dir / (img_path.stem + ".docx")
+    doc.save(str(out_path))
+    return str(out_path)
+
+
+def get_image_info(img_path: str) -> dict:
+    """Trả về thông tin cơ bản của ảnh: width, height, format, mode."""
+    from PIL import Image
+    with Image.open(img_path) as im:
+        return {
+            "width":  im.width,
+            "height": im.height,
+            "format": im.format or Path(img_path).suffix.lstrip(".").upper(),
+            "mode":   im.mode,
+        }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -84,6 +84,33 @@ async def api_word_to_pdf(file: UploadFile = File(...)):
     )
 
 
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp", ".bmp"}
+
+@api.post("/image-to-word", summary="Convert Image (JPG/PNG/TIFF/WebP) → Word (.docx)")
+async def api_image_to_word(file: UploadFile = File(...)):
+    ext = Path(file.filename).suffix.lower()
+    if ext not in IMAGE_EXTS:
+        raise HTTPException(400, f"Chỉ chấp nhận: {', '.join(IMAGE_EXTS)}")
+
+    tmp_dir = Path(tempfile.mkdtemp(dir=UPLOAD_DIR))
+    in_path = tmp_dir / file.filename
+
+    with open(in_path, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        out_path = conv.image_to_word(str(in_path), str(tmp_dir))
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(500, str(e))
+
+    return FileResponse(
+        out_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=Path(out_path).name,
+    )
+
+
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
 
 def ui_pdf_to_word(pdf_file):
@@ -111,6 +138,25 @@ def ui_word_to_pdf(docx_file):
         words = conv.get_docx_word_count(docx_file)
         out   = conv.word_to_pdf(docx_file)
         msg   = f"Chuyển đổi thành công!\nSố từ: {words:,}"
+        return out, msg
+    except Exception as e:
+        return None, f"Lỗi: {e}"
+
+
+def ui_image_to_word(img_file):
+    if img_file is None:
+        return None, "Vui lòng upload file ảnh."
+    try:
+        info     = conv.get_device_info()
+        img_info = conv.get_image_info(img_file)
+        out      = conv.image_to_word(img_file)
+        words    = conv.get_docx_word_count(out)
+        msg = (
+            f"Chuyển đổi thành công!\n"
+            f"GPU: {info['name']} ({info['vram_gb']} GB VRAM)\n"
+            f"Ảnh: {img_info['width']}×{img_info['height']} {img_info['format']} | "
+            f"Từ nhận dạng được: {words:,}"
+        )
         return out, msg
     except Exception as e:
         return None, f"Lỗi: {e}"
@@ -158,6 +204,16 @@ Sử dụng [marker-pdf](https://github.com/VikParuchuri/marker) với GPU-accel
                     status_w2p = gr.Textbox(label="Trạng thái", lines=4, interactive=False)
             btn_w2p.click(ui_word_to_pdf, inputs=docx_input, outputs=[pdf_out, status_w2p])
 
+        with gr.Tab("Image → Word"):
+            with gr.Row():
+                with gr.Column():
+                    img_input  = gr.Image(label="Upload ảnh (JPG/PNG/TIFF/WebP)", type="filepath")
+                    btn_i2w    = gr.Button("Chuyển đổi", variant="primary")
+                with gr.Column():
+                    word_out_i = gr.File(label="Tải xuống Word (.docx)")
+                    status_i2w = gr.Textbox(label="Trạng thái", lines=4, interactive=False)
+            btn_i2w.click(ui_image_to_word, inputs=img_input, outputs=[word_out_i, status_i2w])
+
         gr.Markdown(
             """
 ---
@@ -166,6 +222,7 @@ Sử dụng [marker-pdf](https://github.com/VikParuchuri/marker) với GPU-accel
 |----------|-------|
 | `POST /pdf-to-word` | Upload PDF, nhận .docx |
 | `POST /word-to-pdf` | Upload .docx, nhận PDF |
+| `POST /image-to-word` | Upload ảnh (JPG/PNG/TIFF/WebP), nhận .docx |
 | `GET /health` | Kiểm tra GPU status |
 """
         )
@@ -189,6 +246,6 @@ if __name__ == "__main__":
     ui.launch(
         server_name="0.0.0.0",
         server_port=7860,
-        share=False,   # đặt True nếu muốn public URL
+        share=True,    # tạo link public gradio.live
         show_error=True,
     )
